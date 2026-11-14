@@ -6,8 +6,12 @@ readme = "README.md"
 authors = [
     { name = "Om Mehta", email = "ommehta16@icloud.com" }
 ]
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "insightface>=2.1",
+    "opencv-python>=5.0.0.93",
+    "pillow>=13.0.0",
+]
 
 [project.scripts]
 opp-detector = "cli:main"
