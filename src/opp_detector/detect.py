@@ -6,6 +6,8 @@ import time
 import multiprocessing as mp
 from multiprocessing.connection import Connection
 
+SHOW_FEED = False
+
 class Detector:
 	_anal:PersonAnalysis
 	_detections:Connection
@@ -20,7 +22,7 @@ class Detector:
 	def register(self, imgs:list[cv2.typing.MatLike], name:str):
 		self._anal.register(name, imgs)
 
-	def background_loop(self, cap:cv2.VideoCapture, target_frame_rate:float=5):
+	def background_loop(self, cap:cv2.VideoCapture, target_frame_rate:float=2):
 		'''The internal background loop task: consumes video frames and processes; send a notif to detection queue if opp detected'''
 
 		if not cap.isOpened():
@@ -39,7 +41,8 @@ class Detector:
 
 			# waitKey is what repaints the window + handles its events, so run it on EVERY frame
 			# (skipped ones too) or the window freezes; press q to quit
-			if cv2.waitKey(1) & 0xFF == ord("q"): break
+			if SHOW_FEED:
+				if cv2.waitKey(1) & 0xFF == ord("q"): break
 
 			now = time.monotonic()
 			if now - last_processed < min_interval: continue
@@ -65,7 +68,8 @@ class Detector:
 				)
 				det_summary[name] = summary
 
-			self.show_frame(frame, dets)
+			if SHOW_FEED:
+				self.show_frame(frame, dets)
 
 			self._detections.send(det_summary)
 
