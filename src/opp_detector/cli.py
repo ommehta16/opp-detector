@@ -2,6 +2,7 @@ from opp_detector.detect import start_detector
 from multiprocessing import Process
 from multiprocessing.connection import Connection
 import time
+from opp_detector.evader import choose_evasion_method
 
 people = {
     "om":['test_pics/reference.JPG']
@@ -51,8 +52,10 @@ def handle_detections(p:Process, detection_recv: Connection):
         severity = [severity[i] for i in range(1,5)] + [curr_severity]
         
         if is_edge(severity):
-            # TODO: do evasion!
             print("I WOULD EVADE YOU HERE YOU STINKY MONKEY")
+
+            evade = choose_evasion_method()
+            evade()
 
 last_edge:float = 0
 DEBOUNCE_S = 5
