@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Opp Detector</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --ink: #1d1c1a;
+    --muted: #6d6a64;
+    --line: #e4e1da;
+    --line-strong: #cfcbc2;
+    --opp: #c8372d;
+    --opp-soft: #fbeceb;
+    --ok: #2e8b57;
+    --warn-soft: #fdf4dc;
+    --warn-ink: #6b4e00;
+    --btn-ink: #ffffff;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --surface: #1e1e1c;
+      --ink: #eeece7;
+      --muted: #9a968e;
+      --line: #2e2d2a;
+      --line-strong: #45433e;
+      --opp: #f0685d;
+      --opp-soft: #34201e;
+      --ok: #55c088;
+      --warn-soft: #33290f;
+      --warn-ink: #ecd08a;
+      --btn-ink: #151514;
+      --shadow: none;
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 56px 20px 80px;
+  }
+  [hidden] { display: none !important; }
+
+  header { margin-bottom: 32px; }
+  h1 { font-size: 1.75rem; line-height: 1.2; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .tagline { margin: 0; color: var(--muted); }
+  h2 {
+    font-size: .8125rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 40px 0 12px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  /* ---------- buttons & focus ---------- */
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 40px; padding: 8px 18px;
+    border-radius: 999px; border: 1px solid var(--line-strong);
+    background: transparent; font-weight: 600; white-space: nowrap;
+    transition: background .15s, opacity .15s, border-color .15s;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--ink); }
+  .btn:disabled { opacity: .45; }
+  .btn-primary { background: var(--ink); border-color: var(--ink); color: var(--btn-ink); }
+  .btn-primary:hover:not(:disabled) { opacity: .88; }
+  .btn-danger { background: var(--opp); border-color: var(--opp); color: var(--btn-ink); }
+  .btn-small { min-height: 32px; padding: 4px 12px; font-size: .875rem; }
+  .btn-big { min-height: 48px; padding: 10px 26px; font-size: 1.0625rem; min-width: 9.5em; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 2px solid currentColor; border-right-color: transparent;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- detector ---------- */
+  .detector { padding: 20px; }
+  .detector-main { display: flex; align-items: center; gap: 16px; }
+  .detector-info { flex: 1; min-width: 0; }
+  .status-line { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1.125rem; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+    background: var(--line-strong);
+  }
+  .detector[data-mode="running"] .dot { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+  .detector[data-mode="error"] .dot { background: var(--opp); }
+  .detector[data-mode="disconnected"] .dot { background: transparent; border: 2px solid var(--line-strong); }
+  .detector[data-mode="pending"] .dot { background: var(--muted); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .status-detail { margin: 2px 0 0 20px; color: var(--muted); font-size: .9375rem; overflow-wrap: anywhere; }
+  .detector[data-mode="error"] .status-detail { color: var(--opp); }
+
+  .note {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+    background: var(--warn-soft); color: var(--warn-ink); font-size: .9375rem;
+  }
+  .note span { flex: 1; min-width: 12em; }
+  .note .btn { border-color: currentColor; }
+  .error-text { color: var(--opp); font-size: .9375rem; margin: 12px 0 0; overflow-wrap: anywhere; }
+  .error-text:empty { display: none; }
+
+  /* ---------- people ---------- */
+  .people { list-style: none; margin: 0; padding: 0; }
+  .person {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .person:first-child { border-top: 0; }
+  .thumb {
+    width: 48px; height: 48px; flex: none; border-radius: 50%; overflow: hidden;
+    background: var(--line); display: grid; place-items: center;
+    color: var(--muted); font-weight: 600;
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px transparent;
+    transition: box-shadow .15s;
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .person.is-opp .thumb { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--opp); }
+  .who { flex: 1; min-width: 0; }
+  .name { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .role { display: block; font-size: .8125rem; color: var(--muted); }
+  .person.is-opp .role { color: var(--opp); font-weight: 600; }
+  .row-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+  .row-error { flex-basis: 100%; margin: 0; }
+  .confirm-text { font-size: .9375rem; color: var(--muted); }
+
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover:not(:disabled) { background: var(--opp-soft); color: var(--opp); }
+  .icon-btn svg { width: 18px; height: 18px; }
+
+  /* switch: a real checkbox underneath */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: .875rem; color: var(--muted); user-select: none; }
+  .switch input {
+    appearance: none; -webkit-appearance: none; margin: 0; flex: none;
+    width: 40px; height: 24px; border-radius: 999px;
+    background: var(--line-strong); position: relative; cursor: pointer;
+    transition: background .15s;
+  }
+  .switch input::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 18px; height: 18px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+    transition: transform .15s;
+  }
+  .switch input:checked { background: var(--opp); }
+  .switch input:checked::after { transform: translateX(16px); }
+  .switch input:disabled { opacity: .6; cursor: progress; }
+
+  .empty { padding: 36px 20px; text-align: center; color: var(--muted); }
+  .empty strong { display: block; color: var(--ink); margin-bottom: 2px; }
+
+  /* ---------- add form ---------- */
+  .add { padding: 20px; }
+  .add-grid { display: flex; gap: 16px; align-items: stretch; }
+  .drop {
+    position: relative; flex: none; width: 132px; min-height: 132px;
+    display: grid; place-items: center; text-align: center;
+    border: 1.5px dashed var(--line-strong); border-radius: 12px;
+    color: var(--muted); font-size: .875rem; line-height: 1.35; cursor: pointer; overflow: hidden;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.is-over { border-color: var(--ink); color: var(--ink); }
+  .drop.is-over { background: var(--bg); }
+  .drop:focus-within { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .drop input {
+    position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
+  }
+  .drop-prompt { padding: 10px; pointer-events: none; }
+  .drop-prompt b { display: block; color: var(--ink); font-weight: 600; }
+  .drop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+  .drop.has-file { border-style: solid; }
+  .drop-change {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 4px;
+    background: rgba(0, 0, 0, .55); color: #fff; font-size: .75rem; pointer-events: none;
+  }
+  .fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+  .field label { display: block; font-size: .875rem; font-weight: 600; margin-bottom: 6px; }
+  .field input[type="text"] {
+    width: 100%; min-height: 42px; padding: 8px 12px;
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line-strong); border-radius: 10px;
+  }
+  .field input[type="text"]:focus-visible { outline-offset: 0; border-color: var(--ink); }
+  .form-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: auto; }
+
+  footer { margin-top: 40px; color: var(--muted); font-size: .8125rem; text-align: center; }
+
+  @media (max-width: 480px) {
+    main { padding: 32px 14px 56px; }
+    .detector-main { flex-direction: column; align-items: stretch; }
+    .add-grid { flex-direction: column; }
+    .drop { width: 100%; min-height: 150px; }
+    .person { gap: 10px; padding: 12px; }
+    .person .switch span { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
+    .spinner { animation-duration: 1.4s !important; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Opp Detector</h1>
+    <p class="tagline">Hands-free boss evasion. Tell it who to watch for, then get back to it.</p>
+  </header>
+
+  <section class="card detector" id="detector" data-mode="pending" aria-labelledby="detector-h">
+    <h2 id="detector-h" hidden>Detector</h2>
+    <div class="detector-main">
+      <div class="detector-info" role="status" aria-live="polite">
+        <div class="status-line"><span class="dot" aria-hidden="true"></span><span id="status-label">Connecting…</span></div>
+        <p class="status-detail" id="status-detail"></p>
+      </div>
+      <button type="button" class="btn btn-primary btn-big" id="toggle-btn" disabled>Start detector</button>
+    </div>
+    <div class="note" id="stale-note" hidden>
+      <span>People changed — restart the detector to apply.</span>
+      <button type="button" class="btn btn-small" id="restart-btn">Restart</button>
+    </div>
+    <p class="error-text" id="detector-error" role="alert"></p>
+  </section>
+
+  <section aria-labelledby="people-h">
+    <h2 id="people-h">People</h2>
+    <div class="card">
+      <ul class="people" id="people"></ul>
+      <div class="empty" id="people-empty" hidden>
+        <strong>Nobody here yet.</strong>
+        Add a face below and flag your opps.
+      </div>
+      <div class="empty" id="people-loading">Loading…</div>
+      <div class="empty" id="people-failed" hidden>
+        <strong>Couldn't load people.</strong>
+        <span id="people-failed-msg"></span>
+        <div style="margin-top:12px"><button type="button" class="btn btn-small" id="people-retry">Try again</button></div>
+      </div>
+    </div>
+    <p class="error-text" id="people-error" role="alert"></p>
+  </section>
+
+  <section aria-labelledby="add-h">
+    <h2 id="add-h">Add someone</h2>
+    <form class="card add" id="add-form" novalidate>
+      <div class="add-grid">
+        <div class="drop" id="drop">
+          <img id="preview" alt="" hidden>
+          <div class="drop-prompt" id="drop-prompt"><b>Add a photo</b>Click or drop an image</div>
+          <div class="drop-change" id="drop-change" hidden>Change photo</div>
+          <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Photo of the person">
+        </div>
+        <div class="fields">
+          <div class="field">
+            <label for="name">Name</label>
+            <input type="text" id="name" maxlength="60" autocomplete="off" placeholder="e.g. The Boss">
+          </div>
+          <div class="form-foot">
+            <label class="switch"><input type="checkbox" role="switch" id="new-opp"><span>This one's an opp</span></label>
+            <button type="submit" class="btn btn-primary" id="add-btn" disabled>Add person</button>
+          </div>
+        </div>
+      </div>
+      <p class="error-text" id="add-error" role="alert"></p>
+    </form>
+  </section>
+
+  <footer>One clear, front-facing photo per person works best. Everything stays on this computer.</footer>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var POLL_MS = 2000;
+  var MAX_BYTES = 15 * 1024 * 1024;
+  var OK_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+  var TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5"/></svg>';
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  // ---------- API ----------
+  function ApiError(message, status) { this.message = message; this.status = status; }
+
+  async function api(method, path, opts) {
+    opts = opts || {};
+    var res;
+    try {
+      res = await fetch(path, { method: method, headers: opts.headers, body: opts.body, cache: 'no-store' });
+    } catch (e) {
+      throw new ApiError("Can't reach the server. Is it still running?", 0);
+    }
+    var data = null;
+    if (res.status !== 204) {
+      var text = await res.text().catch(function () { return ''; });
+      if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
+    }
+    if (!res.ok) {
+      var msg = data && typeof data.error === 'string' && data.error
+        ? data.error : 'Something went wrong (HTTP ' + res.status + ').';
+      throw new ApiError(msg, res.status);
+    }
+    return data;
+  }
+  function errMsg(e) { return e && e.message ? e.message : 'Something went wrong.'; }
+
+  // ---------- Detector ----------
+  var det = {
+    connected: null,   // null = not known yet
+    status: null,      // last status from server
+    pending: null,     // 'start' | 'stop' | 'restart'
+    actionError: '',
+    epoch: 0           // bumped when an action finishes, so older polls are dropped
+  };
+  var ui = {
+    box: $('detector'), label: $('status-label'), detail: $('status-detail'),
+    toggle: $('toggle-btn'), stale: $('stale-note'), restart: $('restart-btn'), error: $('detector-error')
+  };
+
+  function ago(epochSec) {
+    var s = Math.max(0, Math.round(Date.now() / 1000 - epochSec));
+    if (s < 5) return 'just now';
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + ' min ago';
+    if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+    return Math.floor(s / 86400) + ' d ago';
+  }
+
+  function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+
+  function setButton(btn, text, busy) {
+    var key = text + '|' + (busy ? 1 : 0);
+    if (btn.dataset.key === key) return;
+    btn.dataset.key = key;
+    btn.textContent = '';
+    if (busy) btn.appendChild(el('span', 'spinner'));
+    btn.appendChild(document.createTextNode(text));
+    if (busy) btn.setAttribute('aria-busy', 'true'); else btn.removeAttribute('aria-busy');
+  }
+
+  function renderDetector() {
+    var s = det.status, mode, label, detail = '', btnText = 'Start detector', running = !!(s && s.running);
+
+    if (det.pending) {
+      mode = 'pending';
+      if (det.pending === 'stop') { label = 'Stopping…'; btnText = 'Stopping…'; }
+      else {
+        label = det.pending === 'restart' ? 'Restarting…' : 'Starting…';
+        detail = 'Warming up the model. This takes a few seconds.';
+        btnText = label;
+      }
+    } else if (det.connected === null) {
+      mode = 'pending'; label = 'Connecting…';
+    } else if (!det.connected || !s) {
+      mode = 'disconnected'; label = 'Disconnected';
+      detail = "Can't reach the server. Retrying…";
+    } else if (running) {
+      mode = 'running'; label = 'Watching';
+      var n = s.evasions || 0;
+      if (n > 0) {
+        detail = n + (n === 1 ? ' evasion' : ' evasions');
+        if (s.last_evasion != null) detail += ' · last evasion ' + ago(s.last_evasion);
+      } else {
+        detail = 'No evasions yet. Coast is clear.';
+      }
+      btnText = 'Stop';
+    } else if (s.error) {
+      mode = 'error'; label = 'Error'; detail = s.error;
+    } else {
+      mode = 'stopped'; label = 'Stopped';
+      detail = "Nobody's watching your back.";
+      if (s.evasions > 0) {
+        detail = s.evasions + (s.evasions === 1 ? ' evasion' : ' evasions') + ' last run.';
+      }
+    }
+
+    ui.box.dataset.mode = mode;
+    setText(ui.label, label);
+    setText(ui.detail, detail);
+    ui.detail.hidden = !detail;
+
+    setButton(ui.toggle, btnText, !!det.pending);
+    ui.toggle.disabled = !!det.pending || mode === 'disconnected' || det.connected === null;
+    ui.toggle.classList.toggle('btn-primary', !(running && !det.pending));
+
+    ui.stale.hidden = !(mode === 'running' && s.stale);
+
+    var err = det.actionError;
+    if (!err && mode === 'running' && s.error) err = s.error;   // running but reporting a problem
+    setText(ui.error, err || '');
+  }
+
+  var pollTimer = null, pollBusy = false;
+
+  async function poll() {
+    if (pollBusy) return;
+    pollBusy = true;
+    var epoch = det.epoch, wasConnected = det.connected;
+    try {
+      var s = await api('GET', '/api/detector');
+      if (epoch === det.epoch) { det.status = s; det.connected = true; }
+      if (wasConnected === false) loadPeople();   // server came back: resync the list
+    } catch (e) {
+      if (epoch === det.epoch) det.connected = false;
+    }
+    pollBusy = false;
+    renderDetector();
+  }
+
+  function schedule() {
+    clearTimeout(pollTimer);
+    if (document.hidden) return;
+    pollTimer = setTimeout(async function () { await poll(); schedule(); }, POLL_MS);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    clearTimeout(pollTimer);
+    if (!document.hidden) { poll().then(schedule); }
+  });
+
+  async function detectorAction(kind) {
+    if (det.pending) return;
+    det.pending = kind;
+    det.actionError = '';
+    renderDetector();
+    try {
+      if (kind === 'stop' || kind === 'restart') {
+        det.status = await api('POST', '/api/detector/stop');
+        det.connected = true;
+      }
+      if (kind === 'start' || kind === 'restart') {
+        det.status = await api('POST', '/api/detector/start');
+        det.connected = true;
+      }
+    } catch (e) {
+      det.actionError = errMsg(e);
+    }
+    det.pending = null;
+    det.epoch++;
+    renderDetector();
+    if (det.actionError) poll();   // find out what state we actually ended up in
+  }
+
+  ui.toggle.addEventListener('click', function () {
+    detectorAction(det.status && det.status.running ? 'stop' : 'start');
+  });
+  ui.restart.addEventListener('click', function () { detectorAction('restart'); });
+
+  // ---------- People ----------
+  var people = [];               // server order
+  var rows = new Map();          // id -> row controller
+  var listEl = $('people'), emptyEl = $('people-empty'), loadingEl = $('people-loading');
+  var failedEl = $('people-failed'), failedMsg = $('people-failed-msg'), peopleError = $('people-error');
+  var peopleLoaded = false;
+
+  function peopleChanged() {
+    det.actionError = '';
+    poll();   // picks up `stale` straight away
+  }
+
+  function makeRow(p) {
+    var li = el('li', 'person');
+    var thumb = el('div', 'thumb');
+    var img = document.createElement('img');
+    img.alt = '';
+    img.addEventListener('error', function () {
+      img.remove();
+      thumb.textContent = (p.name || '?').trim().charAt(0).toUpperCase();
+    });
+    thumb.appendChild(img);
+
+    var who = el('div', 'who');
+    var name = el('span', 'name');
+    var role = el('span', 'role');
+    who.appendChild(name); who.appendChild(role);
+
+    // normal actions
+    var actions = el('div', 'row-actions');
+    var sw = el('label', 'switch');
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.setAttribute('role', 'switch');
+    sw.appendChild(box);
+    sw.appendChild(el('span', '', 'Opp'));
+    var del = el('button', 'icon-btn');
+    del.type = 'button';
+    del.innerHTML = TRASH_SVG;   // static markup only
+    actions.appendChild(sw); actions.appendChild(del);
+
+    // confirm-delete actions
+    var confirm = el('div', 'row-actions');
+    confirm.hidden = true;
+    var yes = el('button', 'btn btn-small btn-danger', 'Remove');
+    yes.type = 'button';
+    var no = el('button', 'btn btn-small', 'Keep');
+    no.type = 'button';
+    confirm.appendChild(el('span', 'confirm-text', 'Sure?'));
+    confirm.appendChild(yes); confirm.appendChild(no);
+
+    var error = el('p', 'error-text row-error');
+    error.setAttribute('role', 'alert');
+
+    li.appendChild(thumb); li.appendChild(who); li.appendChild(actions); li.appendChild(confirm); li.appendChild(error);
+
+    var busy = false, confirmTimer = null;
+
+    function update(next) {
+      p = next;
+      setText(name, p.name);
+      name.title = p.name;
+      setText(role, p.opp ? 'Opp' : 'Friendly');
+      li.classList.toggle('is-opp', !!p.opp);
+      if (!busy) box.checked = !!p.opp;
+      box.setAttribute('aria-label', 'Flag ' + p.name + ' as an opp');
+      del.setAttribute('aria-label', 'Remove ' + p.name);
+      del.title = 'Remove';
+      yes.setAttribute('aria-label', 'Yes, remove ' + p.name);
+      no.setAttribute('aria-label', 'Keep ' + p.name);
+      if (img.parentNode && img.getAttribute('src') !== p.image) img.src = p.image; // parentNode is gone once the image failed to load
+    }
+
+    function showConfirm(on) {
+      clearTimeout(confirmTimer);
+      actions.hidden = on;
+      confirm.hidden = !on;
+      if (on) {
+        no.focus();
+        confirmTimer = setTimeout(function () {
+          if (!busy && !confirm.contains(document.activeElement)) showConfirm(false);
+          else if (!busy) confirmTimer = setTimeout(function () { if (!busy) showConfirm(false); }, 6000);
+        }, 6000);
+      }
+    }
+
+    box.addEventListener('change', async function () {
+      if (busy) return;
+      var want = box.checked, before = p;
+      busy = true; box.disabled = true;
+      error.textContent = '';
+      update(Object.assign({}, p, { opp: want }));   // optimistic
+      try {
+        var saved = await api('PATCH', '/api/people/' + encodeURIComponent(p.id), {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ opp: want })
+        });
+        busy = false;
+        store(saved && saved.id != null ? saved : Object.assign({}, before, { opp: want }));
+        peopleChanged();
+      } catch (e) {
+        busy = false;
+        if (e.status === 404) { error.textContent = ''; loadPeople(); }
+        else { update(before); error.textContent = errMsg(e); }
+      }
+      box.disabled = false;
+    });
+
+    del.addEventListener('click', function () { error.textContent = ''; showConfirm(true); });
+    no.addEventListener('click', function () { showConfirm(false); del.focus(); });
+    confirm.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { showConfirm(false); del.focus(); }
+    });
+    yes.addEventListener('click', async function () {
+      if (busy) return;
+      busy = true; yes.disabled = no.disabled = true;
+      setButton(yes, 'Removing…', true);
+      try {
+        await api('DELETE', '/api/people/' + encodeURIComponent(p.id));
+      } catch (e) {
+        if (e.status !== 404) {   // 404 = already gone, which is what we wanted
+          busy = false; yes.disabled = no.disabled = false;
+          setButton(yes, 'Remove', false);
+          showConfirm(false);
+          error.textContent = errMsg(e);
+          return;
+        }
+      }
+      clearTimeout(confirmTimer);
+      people = people.filter(function (x) { return x.id !== p.id; });
+      renderPeople();
+      $('people-h').scrollIntoView({ block: 'nearest' });
+      peopleChanged();
+    });
+
+    function store(next) {
+      people = people.map(function (x) { return x.id === next.id ? next : x; });
+      update(next);
+    }
+
+    update(p);
+    return { li: li, update: update, isBusy: function () { return busy; }, dispose: function () { clearTimeout(confirmTimer); } };
+  }
+
+  function renderPeople() {
+    var seen = new Set();
+    people.forEach(function (p, i) {
+      seen.add(p.id);
+      var row = rows.get(p.id);
+      if (!row) { row = makeRow(p); rows.set(p.id, row); }
+      else if (!row.isBusy()) row.update(p);
+      if (listEl.children[i] !== row.li) listEl.insertBefore(row.li, listEl.children[i] || null);
+    });
+    rows.forEach(function (row, id) {
+      if (!seen.has(id)) { row.dispose(); row.li.remove(); rows.delete(id); }
+    });
+    loadingEl.hidden = true;
+    failedEl.hidden = true;
+    emptyEl.hidden = people.length > 0;
+  }
+
+  var loadSeq = 0;
+  async function loadPeople() {
+    var seq = ++loadSeq;
+    try {
+      var list = await api('GET', '/api/people');
+      if (seq !== loadSeq) return;
+      people = Array.isArray(list) ? list : [];
+      peopleLoaded = true;
+      peopleError.textContent = '';
+      renderPeople();
+    } catch (e) {
+      if (seq !== loadSeq) return;
+      if (peopleLoaded) {
+        peopleError.textContent = "Couldn't refresh the list: " + errMsg(e);
+      } else {
+        loadingEl.hidden = true; emptyEl.hidden = true;
+        failedEl.hidden = false;
+        failedMsg.textContent = errMsg(e);
+      }
+    }
+  }
+  $('people-retry').addEventListener('click', function () {
+    failedEl.hidden = true; loadingEl.hidden = false;
+    loadPeople();
+  });
+
+  // ---------- Add form ----------
+  var form = $('add-form'), drop = $('drop'), fileInput = $('file'), preview = $('preview');
+  var dropPrompt = $('drop-prompt'), dropChange = $('drop-change');
+  var nameInput = $('name'), newOpp = $('new-opp'), addBtn = $('add-btn'), addError = $('add-error');
+  var chosen = null, previewUrl = null, adding = false;
+
+  function syncAddBtn() {
+    addBtn.disabled = adding || !chosen || !nameInput.value.trim();
+  }
+
+  function setFile(file) {
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+    chosen = file || null;
+    if (chosen) {
+      previewUrl = URL.createObjectURL(chosen);
+      preview.src = previewUrl;
+    } else {
+      preview.removeAttribute('src');
+    }
+    preview.hidden = !chosen;
+    dropPrompt.hidden = !!chosen;
+    dropChange.hidden = !chosen;
+    drop.classList.toggle('has-file', !!chosen);
+    fileInput.setAttribute('aria-label', chosen ? 'Photo of the person: ' + chosen.name + '. Activate to change.' : 'Photo of the person');
+    syncAddBtn();
+  }
+
+  function pickFile(file) {
+    if (!file) return;
+    if (OK_TYPES.indexOf(file.type) === -1) {
+      addError.textContent = "That doesn't look like a JPEG, PNG or WebP image.";
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      addError.textContent = 'That image is too large (15 MB max).';
+      return;
+    }
+    addError.textContent = '';
+    setFile(file);
+    if (!nameInput.value.trim()) nameInput.focus();
+  }
+
+  fileInput.addEventListener('change', function () {
+    var f = fileInput.files && fileInput.files[0];
+    fileInput.value = '';   // so picking the same file again still fires `change`
+    pickFile(f);
+  });
+
+  // The file input covers the drop area, so most browsers handle a drop natively;
+  // we take over so behaviour is the same everywhere and we can validate.
+  ['dragenter', 'dragover'].forEach(function (t) {
+    drop.addEventListener(t, function (e) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      drop.classList.add('is-over');
+    });
+  });
+  drop.addEventListener('dragleave', function (e) {
+    if (!drop.contains(e.relatedTarget)) drop.classList.remove('is-over');
+  });
+  drop.addEventListener('drop', function (e) {
+    e.preventDefault();
+    drop.classList.remove('is-over');
+    if (adding) return;
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) pickFile(files[0]);
+  });
+  // A near-miss drop shouldn't navigate the tab away to the image.
+  ['dragover', 'drop'].forEach(function (t) {
+    window.addEventListener(t, function (e) { if (!drop.contains(e.target)) e.preventDefault(); });
+  });
+
+  nameInput.addEventListener('input', function () { addError.textContent = ''; syncAddBtn(); });
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var name = nameInput.value.trim();
+    if (adding || !chosen || !name) return;
+    adding = true;
+    addError.textContent = '';
+    setButton(addBtn, 'Adding…', true);
+    syncAddBtn();
+    fileInput.disabled = nameInput.readOnly = true;
+    var ok = false;
+    try {
+      var url = '/api/people?name=' + encodeURIComponent(name) + '&opp=' + (newOpp.checked ? '1' : '0');
+      var person = await api('POST', url, { headers: { 'Content-Type': chosen.type }, body: chosen });
+      ok = true;
+      if (person && person.id != null) {
+        people = people.filter(function (x) { return x.id !== person.id; }).concat([person]);
+        renderPeople();
+      }
+      loadPeople();   // take the server's ordering
+      peopleChanged();
+    } catch (err) {
+      addError.textContent = errMsg(err);
+    }
+    adding = false;
+    fileInput.disabled = nameInput.readOnly = false;
+    setButton(addBtn, 'Add person', false);
+    if (ok) {
+      nameInput.value = '';
+      newOpp.checked = false;
+      setFile(null);
+    } else {
+      syncAddBtn();
+      if (/name/i.test(addError.textContent)) nameInput.select();
+    }
+  });
+
+  // ---------- go ----------
+  renderDetector();
+  loadPeople();
+  poll().then(schedule);
+})();
+</script>
+</body>
+</html>
