@@ -30,9 +30,6 @@ class Detector:
 		min_interval:float = 1/target_frame_rate
 		last_processed:float = 0.0
 
-		# who -> conf, proportion of screen
-		det_summary:dict[str,tuple[float,float]] = dict()
-
 		while True:
 			if self._stop.poll(): break
 
@@ -53,6 +50,8 @@ class Detector:
 
 			# now we do the face detection
 			dets = self.detect(frame)
+			# who -> conf, proportion of screen
+			det_summary:dict[str,tuple[float,float]] = dict()
 			unknown_count = 0
 			for detection in dets:
 				name = detection.person
@@ -68,7 +67,7 @@ class Detector:
 
 			self.show_frame(frame, dets)
 
-		self._detections.send(det_summary)
+			self._detections.send(det_summary)
 
 	def detect(self, img:cv2.typing.MatLike) -> list[Detection]:
 		matches = self._anal.match(self._anal.get(img))
