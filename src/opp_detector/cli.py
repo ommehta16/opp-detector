@@ -1,6 +1,7 @@
 from opp_detector.detect import start_detector
 from multiprocessing import Process
 from multiprocessing.connection import Connection
+import time
 
 people = {
     "om":['test_pics/reference.JPG']
@@ -35,7 +36,6 @@ def handle_detections(p:Process, detection_recv: Connection):
 
         # name -> conf, prop of screen
         det_summary:dict[str, tuple[float,float]] = detection_recv.recv()
-        print(det_summary)
 
         curr_severity = 0
 
@@ -43,7 +43,8 @@ def handle_detections(p:Process, detection_recv: Connection):
             if person not in opps: continue
 
             conf, prop = det_summary[person]
-            if conf < 0.8 or prop < 0.01: continue
+
+            if conf < 0.5 or prop < 0.01: continue
 
             curr_severity += 1 # 1 opp on screen so we increase severity
 
@@ -52,12 +53,21 @@ def handle_detections(p:Process, detection_recv: Connection):
         if is_edge(severity):
             # TODO: do evasion!
             print("I WOULD EVADE YOU HERE YOU STINKY MONKEY")
-            ...
+
+last_edge:float = 0
+DEBOUNCE_S = 5
 
 def is_edge(severity:list[float]):
-    start_avg = sum(severity[:-2])/(len(severity) - 1)
+    global last_edge
+
+    start = severity[:-2]
+    start_avg = sum(start)/len(start)
     end = severity[-1]
-    if end > start_avg + 0.1: return True
+    if end > start_avg + 0.1 and time.monotonic() - last_edge > DEBOUNCE_S: 
+        last_edge = time.monotonic()
+        return True
+
+    return False
 
 # UNUSED!
 def calc_severity(opps_in_frame:dict[str, tuple[float,float]]):
