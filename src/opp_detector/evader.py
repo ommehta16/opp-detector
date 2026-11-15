@@ -2,7 +2,9 @@
 Evasion: get whatever is on screen out of sight and silence it, right now.
 
 `choose_evasion_method()` picks the best method this machine allows and returns it; call the
-returned function (no args) every time an opp shows up.
+returned function (no args) every time an opp shows up. It returns a `restore` function (no args,
+never raises) that puts things back once they're gone: unmutes unless it was already muted, switches
+back unless you've moved desktops yourself since, unhides the hidden app.
 
 Methods, best first:
 	_evade_pyautogui      mute + ctrl+right via pyautogui (switch desktop)      needs Accessibility
@@ -45,7 +47,7 @@ _SWITCH_MODIFIERS = {
 _SWITCH_TIMEOUT = 1.5
 
 
-def choose_evasion_method() -> Callable[[], None]:
+def choose_evasion_method() -> Callable[[], Callable[[], None]]:
 	'''Determines and returns the function to call for evasion'''
 	if not IS_MAC:
 		# windows/linux don't gate synthetic keypresses behind a permission
@@ -72,27 +74,39 @@ def choose_evasion_method() -> Callable[[], None]:
 
 # ---------------------------------------------------------------- evasion methods
 
-def _evade_pyautogui() -> None:
+def _evade_pyautogui() -> Callable[[], None]:
 	'''Mute, then switch desktops with pyautogui'''
-	_mute()
-	if _switch_desktop(_press_pyautogui): return
-	if IS_MAC: _hide_front_app()
+	unmute = _mute()
+	undo = _switch_desktop(_press_pyautogui)
+	if not undo and IS_MAC: undo = _hide_front_app()
+	return _restorer(unmute, undo)
 
-def _evade_quartz() -> None:
+def _evade_quartz() -> Callable[[], None]:
 	'''Mute, then switch desktops with a hand-built Quartz key event (mac only)'''
-	_mute()
-	if _switch_desktop(_press_quartz): return
-	_hide_front_app()
+	unmute = _mute()
+	return _restorer(unmute, _switch_desktop(_press_quartz) or _hide_front_app())
 
-def _evade_hide_app() -> None:
+def _evade_hide_app() -> Callable[[], None]:
 	'''Mute, then hide the frontmost app. Needs no permissions (mac only)'''
-	_mute()
-	_hide_front_app()
+	unmute = _mute()
+	return _restorer(unmute, _hide_front_app())
 
-def _evade_sleep_display() -> None:
+def _evade_sleep_display() -> Callable[[], None]:
 	'''Mute, then turn the display off. Last resort: needs nothing, but isn't subtle (mac only)'''
-	_mute()
+	unmute = _mute()
 	subprocess.Popen(["pmset", "displaysleepnow"])
+	return _restorer(unmute) # no undo for the display: whoever's there wakes it by touching anything
+
+def _restorer(*undos:Callable[[], None]|None) -> Callable[[], None]:
+	'''Bundles an evasion's undos (None = nothing to undo) into one restore that never raises'''
+	def restore() -> None:
+		for undo in reversed(undos): # last done, first undone: screen back before sound
+			if undo is None: continue
+			try:
+				undo()
+			except Exception as e:
+				log.warning("restore failed: %s", e)
+	return restore
 
 
 # ---------------------------------------------------------------- what are we allowed to do?
@@ -145,10 +159,23 @@ def _has_pyobjc() -> bool:
 
 # ---------------------------------------------------------------- building blocks
 
-def _mute() -> None:
-	'''Mute system output. Needs no permissions; fired off without waiting so it costs nothing'''
-	if not IS_MAC: return # elsewhere the only generic option is the mute KEY, which is a toggle
-	subprocess.Popen(["osascript", "-e", "set volume output muted true"])
+def _mute() -> Callable[[], None]|None:
+	'''
+	Mute system output; returns the undo. Needs no permissions; fired off without waiting so it costs
+	nothing. The same osascript prints whether it was muted already, read by the undo (done by then)
+	'''
+	if not IS_MAC: return None # elsewhere the only generic option is the mute KEY, which is a toggle
+	proc = subprocess.Popen([
+		"osascript",
+		"-e", "set was to output muted of (get volume settings)",
+		"-e", "set volume output muted true",
+		"-e", "was",
+	], stdout=subprocess.PIPE, text=True)
+	def unmute() -> None:
+		# only if WE muted it ("missing value" = device can't mute: leave that alone too)
+		if proc.communicate(timeout=2)[0].strip() == "false":
+			subprocess.Popen(["osascript", "-e", "set volume output muted false"])
+	return unmute
 
 def _press_pyautogui(arrow:str) -> None:
 	'''Presses the switch-desktop shortcut; `arrow` is "left" or "right"'''
@@ -169,28 +196,44 @@ def _press_quartz(arrow:str) -> None:
 		Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 		time.sleep(0.01)
 
-def _switch_desktop(press:Callable[[str], None]) -> bool:
-	'''Switches to a neighbouring desktop using `press`; returns whether the desktop changed'''
+def _switch_desktop(press:Callable[[str], None], arrow:str|None=None) -> Callable[[], None]|None:
+	'''
+	Switches to a neighbouring desktop using `press` (towards `arrow`, or wherever there's room);
+	returns the undo (switches back), or None if the desktop didn't change
+	'''
 	desktops = _desktops()
-	arrow = "right"
-	if desktops is not None:
-		current, all_ids = desktops
-		if len(all_ids) < 2: return False # nowhere to go
-		if current == all_ids[-1]: arrow = "left" # already on the last one
+	if arrow is None:
+		arrow = "right"
+		if desktops is not None:
+			current, all_ids = desktops
+			if len(all_ids) < 2: return None # nowhere to go
+			if current == all_ids[-1]: arrow = "left" # already on the last one
 
 	try:
 		press(arrow)
 	except Exception as e: # e.g. pyautogui's fail-safe when the mouse is in a screen corner
 		log.warning("keypress failed: %s", e)
-		return False
-	if desktops is None: return True # can't verify -> assume it worked
+		return None
+
+	landed = None # desktop we ended up on; None = can't tell
+	def switch_back() -> None:
+		now = _desktops()
+		if landed is not None and now is not None and now[0] != landed:
+			return # the user has moved on by themselves since: leave them there
+		if not _switch_desktop(press, "left" if arrow == "right" else "right"):
+			log.warning("couldn't switch back to the original desktop")
+
+	if desktops is None: return switch_back # can't verify -> assume it worked
 
 	deadline = time.monotonic() + _SWITCH_TIMEOUT
 	while time.monotonic() < deadline:
 		now = _desktops()
-		if now is None or now[0] != current: return True
+		if now is None: return switch_back
+		if now[0] != desktops[0]:
+			landed = now[0]
+			return switch_back
 		time.sleep(0.02)
-	return False
+	return None
 
 _skylight = None
 def _desktops() -> tuple[int, list[int]]|None:
@@ -219,8 +262,8 @@ def _desktops() -> tuple[int, list[int]]|None:
 	except Exception:
 		return None
 
-def _hide_front_app() -> bool:
-	'''Hides the app that owns the frontmost window; returns whether there was one to hide'''
+def _hide_front_app() -> Callable[[], None]|None:
+	'''Hides the app that owns the frontmost window; returns the undo, or None if there was none'''
 	import AppKit, Quartz
 
 	# don't hide ourselves or the detector's preview window (it lives in a child process)
@@ -239,15 +282,23 @@ def _hide_front_app() -> bool:
 		app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
 		if app is None: continue
 		app.hide() # its return value isn't trustworthy: said False while the app did get hidden
-		return True
-	return False
+		def unhide() -> None:
+			app.unhide()
+			app.activateWithOptions_(AppKit.NSApplicationActivateAllWindows) # back in front, too
+		return unhide
+	return None
 
 
 if __name__ == "__main__":
-	# `python src/evader.py` -> says what would be used; add `--go` to actually fire it
+	# `python src/evader.py` -> says what would be used; add `--go` to actually fire it, then undo it 3s later
 	logging.basicConfig(level=logging.INFO, format="%(message)s")
 	print("can post keypresses:", can_post_keypresses())
 	method = choose_evasion_method()
 	print("chosen method:", method.__name__)
 	if "--go" in sys.argv:
-		method()
+		print("evading...")
+		restore = method()
+		print("evaded; restoring in 3s")
+		time.sleep(3)
+		restore()
+		print("restored")

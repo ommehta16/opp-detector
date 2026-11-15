@@ -31,6 +31,11 @@ POLL_MS = 30 # well ahead of the previews' 10 a second: the detector waits on us
 VIEW_W = 640
 RED, GREEN, GREY = "#d92b2b", "#1e9e4a", "#555555"
 FONT = ImageFont.load_default(24)
+RESTORE_AFTER_S = 3 # threat-free this long (by analysed frames) before undoing the evasion
+# privacy mode: share of the frame a stranger must fill to count as close enough to read the screen.
+# it's the BODY box when one's found: whoever sits at the laptop measured ~0.7, someone ~1.5m back should be
+# ~0.2, someone standing 3m back ~0.08 (back-of-envelope, untested); tune in the actual room
+CLOSE_PROP = 0.15
 
 
 def load_people() -> list[dict]:
@@ -54,6 +59,10 @@ class App:
 		self.evasions = 0
 		self.severity:list[float] = [0] * 5 # opps in frame, last 5 frames
 		self.in_frame:list[str] = [] # ...and their names, latest frame
+		self.strangers:list[str] = [] # close strangers counting as a threat (privacy mode), latest frame
+		self.restore = None # undoes the last evasion; set = evaded, so don't evade again
+		self.last_threat = 0.0 # time.monotonic() of the last frame with a threat in it
+		self.privacy = tk.BooleanVar(value=False)
 		self.bboxes:list[dict] = [] # everyone in the latest frame (Detection.jason())
 		self.jpeg:bytes|None = None # the latest camera preview
 		self.thumbs:dict[str, ImageTk.PhotoImage] = {} # tk drops images nobody holds on to
@@ -86,6 +95,7 @@ class App:
 		self.status.pack(side="left")
 		self.toggle = ttk.Button(top, command=self.toggle_detector)
 		self.toggle.pack(side="right")
+		ttk.Checkbutton(main, text="Privacy mode (strangers close behind you count)", variable=self.privacy).pack(anchor="w", pady=(8, 0))
 
 		ttk.Separator(main).pack(fill="x", pady=12)
 		self.rows = ttk.Frame(main)
@@ -196,12 +206,13 @@ class App:
 		self.error = ""
 		self.frames = self.evasions = 0
 		self.severity = [0] * 5
-		self.in_frame, self.bboxes = [], []
+		self.in_frame, self.strangers, self.bboxes = [], [], []
 
 	def stop(self) -> None:
 		process, (stop_send, detection_recv) = self.detector # type: ignore
 		self.send("stop")
 		self.detector = None
+		self.restore = None # leave the screen as it is: they're clearly at the keyboard
 		# keep reading while it winds down: it can't get to the stop while it's waiting on us to take a preview
 		deadline = time.monotonic() + 2
 		try:
@@ -250,9 +261,13 @@ class App:
 		img = ImageOps.mirror(Image.open(io.BytesIO(jpeg)))
 		draw = ImageDraw.Draw(img)
 		people = {p["id"]: p for p in self.people}
+		unknowns = 0
 		for det in self.bboxes:
 			person = people.get(det["person"]) # None = a stranger (or deleted since)
-			colour = GREY if person is None else RED if person["opp"] else GREEN
+			# the detector calls strangers unknown1, unknown2… in bbox order
+			if det["person"] is None: unknowns += 1
+			who = det["person"] or f"unknown{unknowns}"
+			colour = RED if who in self.strangers else GREY if person is None else RED if person["opp"] else GREEN
 			l, t, r, b = det["bbox"]
 			l, r = img.width - r, img.width - l # the picture is flipped, so the box flips with it
 			draw.rectangle((l, t, r, b), outline=colour, width=4)
@@ -272,19 +287,33 @@ class App:
 		'''`det_summary` is person id -> (confidence, proportion of the frame)'''
 		self.frames += 1
 		self.bboxes = bboxes
+		now = time.monotonic()
 		opps = {p["id"]: p["name"] for p in self.people if p["opp"]}
 		# same thresholds as cli.handle_detections
 		self.in_frame = [
 			opps[who] for who, (conf, prop) in det_summary.items()
 			if who in opps and conf >= 0.5 and prop >= 0.01
 		]
-		self.severity = self.severity[1:] + [len(self.in_frame)]
-		if is_edge(self.severity):
+		# privacy mode: strangers close enough to read the screen, but only with someone else close too
+		# (whoever's at the laptop), so the owner needn't be added, and can't trip it alone when misrecognised.
+		# known people who aren't opps are trusted
+		close = [who for who, (_, prop) in det_summary.items() if prop >= CLOSE_PROP]
+		known = {p["id"] for p in self.people}
+		self.strangers = [who for who in close if who not in known] if self.privacy.get() and len(close) >= 2 else []
+
+		threats = len(self.in_frame) + len(self.strangers)
+		self.severity = self.severity[1:] + [threats]
+		if threats: self.last_threat = now
+		# already evaded: evading again (opp stepped out and back in) would switch away from the fake-work desktop
+		if not self.restore and is_edge(self.severity):
 			self.evasions += 1
 			# evading blocks for up to a second or two: get the reason on screen first
 			self.refresh()
 			self.root.update_idletasks()
-			choose_evasion_method()()
+			self.restore = choose_evasion_method()()
+		elif self.restore and now - self.last_threat >= RESTORE_AFTER_S:
+			restore, self.restore = self.restore, None
+			restore()
 
 	# ------------------------------------------------------------ window
 
@@ -303,6 +332,8 @@ class App:
 		if not running: self.banner.config(text="OFF", bg=GREY)
 		elif not self.frames: self.banner.config(text="STARTING…", bg=GREY)
 		elif self.in_frame: self.banner.config(text="OPP IN FRAME: " + ", ".join(self.in_frame), bg=RED)
+		elif self.strangers: self.banner.config(text="SOMEONE'S BEHIND YOU", bg=RED)
+		elif self.restore: self.banner.config(text="CLEAR · restoring…", bg=GREEN)
 		else: self.banner.config(text="CLEAR", bg=GREEN)
 
 	def quit(self) -> None:
