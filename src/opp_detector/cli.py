@@ -20,7 +20,8 @@ def main() -> None:
     except: pass
     finally:
         stop_send.send("stopppp")
-        p.join()
+        p.join(2)
+        p.terminate() # it can be stuck handing us a preview we'll never read
 
 def handle_detections(p:Process, detection_recv: Connection):
     # name -> (start time, end time)
@@ -36,7 +37,9 @@ def handle_detections(p:Process, detection_recv: Connection):
         if not detection_recv.poll(1): continue
 
         # name -> conf, prop of screen
-        det_summary:dict[str, tuple[float,float]] = detection_recv.recv()
+        kind, *msg = detection_recv.recv()
+        if kind != "detections": continue # camera previews etc. are for the app
+        det_summary:dict[str, tuple[float,float]] = msg[0]
 
         curr_severity = 0
 

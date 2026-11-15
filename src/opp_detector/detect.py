@@ -19,11 +19,37 @@ class Detector:
 		self._detections = out_pipe
 		self._stop = stop_pipe
 
-	def register(self, imgs:list[cv2.typing.MatLike], name:str):
-		self._anal.register(name, imgs)
+	def register(self, imgs:list[cv2.typing.MatLike], name:str) -> bool:
+		'''-> whether any of `imgs` was usable (a photo needs exactly one face in it)'''
+		return bool(imgs) and self._anal.register(name, imgs).accepted > 0
 
-	def background_loop(self, cap:cv2.VideoCapture, target_frame_rate:float=2):
-		'''The internal background loop task: consumes video frames and processes; send a notif to detection queue if opp detected'''
+	def handle_commands(self) -> bool:
+		'''
+		Does whatever the app sent down the stop pipe since last time -> False when it's time to stop
+
+			("register", name, img_paths)   add someone without restarting (a restart reloads the model);
+			                                answered with ("rejected", name) if no photo was usable
+			("unregister", name)
+			anything else                   stop
+		'''
+		try:
+			while self._stop.poll():
+				cmd = self._stop.recv()
+				if not isinstance(cmd, tuple): return False
+				if cmd[0] == "register":
+					if not self.register(_read_imgs(cmd[2]), cmd[1]): self._detections.send(("rejected", cmd[1]))
+				elif cmd[0] == "unregister":
+					self._anal.remove_person(cmd[1])
+		except EOFError: # the app is gone
+			return False
+		return True
+
+	def background_loop(self, cap:cv2.VideoCapture, target_frame_rate:float=2, preview_frame_rate:float=10):
+		'''
+		The internal background loop task: consumes video frames and processes; sends the app
+			("preview", jpeg)                  the frame at processing size, `preview_frame_rate` times a second
+			("detections", summary, bboxes)    who is in frame, `target_frame_rate` times a second
+		'''
 
 		if not cap.isOpened():
 			raise RuntimeError("Capture is not opened")
@@ -31,9 +57,10 @@ class Detector:
 		# throttle by wall clock: the camera's reported fps can't be trusted (mine says 15, delivers 30)
 		min_interval:float = 1/target_frame_rate
 		last_processed:float = 0.0
+		last_preview:float = 0.0
 
 		while True:
-			if self._stop.poll(): break
+			if not self.handle_commands(): break
 
 			ret, frame_raw = cap.read()
 			if not ret:
@@ -45,6 +72,12 @@ class Detector:
 				if cv2.waitKey(1) & 0xFF == ord("q"): break
 
 			now = time.monotonic()
+			if now - last_preview >= 1/preview_frame_rate:
+				last_preview = now
+				# small (480p) on purpose: it's all the model looks at anyway, and it keeps the pipe cheap.
+				# this send blocks until the app reads it, so a slow app slows us down instead of piling up frames
+				self._detections.send(("preview", cv2.imencode(".jpg", _to_size(frame_raw))[1].tobytes()))
+
 			if now - last_processed < min_interval: continue
 			last_processed = now
 
@@ -71,7 +104,7 @@ class Detector:
 			if SHOW_FEED:
 				self.show_frame(frame, dets)
 
-			self._detections.send(det_summary)
+			self._detections.send(("detections", det_summary, [d.jason() for d in dets]))
 
 	def detect(self, img:cv2.typing.MatLike) -> list[Detection]:
 		matches = self._anal.match(self._anal.get(img))
@@ -113,9 +146,7 @@ def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out
 	anal = PersonAnalysis()
 	detector = Detector(anal, stop_pipe, out_pipe)
 	for name in people:
-		img_paths = people[name]
-		ims:list[cv2.typing.MatLike] = list(filter(lambda a: a is not None, map(cv2.imread, img_paths))) #type: ignore
-		detector.register(ims,name)
+		detector.register(_read_imgs(people[name]),name)
 
 	cap = cv2.VideoCapture(0) 
 	try:
@@ -159,7 +190,10 @@ class Detection:
 		return abs((r-l) * (b-t))
 	
 	def jason(self):
-		return {'bbox':self.bbox,'person':self.person}
+		return {'bbox':self.bbox,'person':self.person,'similarity':self.similarity}
+
+def _read_imgs(img_paths:list[str]) -> list[cv2.typing.MatLike]:
+	return list(filter(lambda a: a is not None, map(cv2.imread, img_paths))) #type: ignore
 
 def _to_size(img:cv2.typing.MatLike):
 	'''Resizes img to processing size'''

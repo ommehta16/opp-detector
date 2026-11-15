@@ -1,19 +1,22 @@
 '''
-The desktop app: add people (one photo each), tick who's an opp, start/stop the detector.
+The desktop app: add people (one photo each), tick who's an opp, start/stop the detector, and
+watch what it sees (camera view with a box on everyone + a big CLEAR / OPP IN FRAME banner).
 
 People live in `data/` under the current directory (override with the OPP_DETECTOR_DATA env var):
 	data/people.json        [{id, name, opp, file}]
 	data/images/<id>.jpg    each person's photo
 '''
+import io
 import json
 import os
 import secrets
 import signal
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 
 from opp_detector.cli import is_edge
 from opp_detector.detect import start_detector
@@ -24,7 +27,10 @@ IMAGES = DATA / "images"
 PEOPLE_JSON = DATA / "people.json"
 
 THUMB_PX = 48
-POLL_MS = 100
+POLL_MS = 30 # well ahead of the previews' 10 a second: the detector waits on us to read each one
+VIEW_W = 640
+RED, GREEN, GREY = "#d92b2b", "#1e9e4a", "#555555"
+FONT = ImageFont.load_default(24)
 
 
 def load_people() -> list[dict]:
@@ -47,15 +53,32 @@ class App:
 		self.frames = 0 # frames seen since start: 0 = still loading the model / opening the camera
 		self.evasions = 0
 		self.severity:list[float] = [0] * 5 # opps in frame, last 5 frames
+		self.in_frame:list[str] = [] # ...and their names, latest frame
+		self.bboxes:list[dict] = [] # everyone in the latest frame (Detection.jason())
+		self.jpeg:bytes|None = None # the latest camera preview
 		self.thumbs:dict[str, ImageTk.PhotoImage] = {} # tk drops images nobody holds on to
+		self.blank = ImageTk.PhotoImage(Image.new("RGB", (VIEW_W, VIEW_W * 9 // 16), "#1c1c1c")) # camera off
+		self.photo = self.blank # what the camera view is showing
 
 		root.title("Opp Detector")
 		root.minsize(360, 0)
 		root.resizable(False, False)
 		root.protocol("WM_DELETE_WINDOW", self.quit)
 
-		main = ttk.Frame(root, padding=16)
-		main.pack(fill="both", expand=True)
+		outer = ttk.Frame(root, padding=16)
+		outer.pack(fill="both", expand=True)
+
+		# left: banner + camera view. tk.Label because ttk ignores background colours on macOS
+		left = ttk.Frame(outer)
+		left.pack(side="left", anchor="n", padx=(0, 16))
+		self.banner = tk.Label(left, fg="white", font=("Helvetica", 24, "bold"), pady=8)
+		self.banner.pack(fill="x")
+		self.view = tk.Label(left, bd=0, image=self.blank)
+		self.view.pack()
+
+		# right: everything else
+		main = ttk.Frame(outer)
+		main.pack(side="left", anchor="n", fill="both", expand=True)
 
 		top = ttk.Frame(main)
 		top.pack(fill="x")
@@ -68,7 +91,11 @@ class App:
 		self.rows = ttk.Frame(main)
 		self.rows.pack(fill="x")
 		self.rows.columnconfigure(1, weight=1)
-		ttk.Button(main, text="Add person…", command=self.add_person).pack(anchor="w", pady=(12, 0))
+		buttons = ttk.Frame(main)
+		buttons.pack(anchor="w", pady=(12, 0))
+		ttk.Button(buttons, text="Add person…", command=self.add_person).pack(side="left")
+		self.capture = ttk.Button(buttons, text="Capture from camera", command=self.capture_person)
+		self.capture.pack(side="left", padx=(8, 0))
 
 		self.render_people()
 		self.refresh()
@@ -115,6 +142,14 @@ class App:
 		except Exception:
 			messagebox.showerror("Opp Detector", "That file couldn't be read as an image.", parent=self.root)
 			return
+		self.enrol(img, opp=False)
+
+	def capture_person(self) -> None:
+		'''Whoever the camera sees right now becomes an opp ("you're my boss now")'''
+		# the 480p preview frame is all it takes: it's the size the detector looks at anyway
+		if self.jpeg: self.enrol(Image.open(io.BytesIO(self.jpeg)), opp=True)
+
+	def enrol(self, img:Image.Image, opp:bool) -> None:
 		name = (simpledialog.askstring("Opp Detector", "Who is this?", parent=self.root) or "").strip()
 		if not name: return
 
@@ -122,11 +157,17 @@ class App:
 		person_id = secrets.token_hex(8)
 		IMAGES.mkdir(parents=True, exist_ok=True)
 		img.save(IMAGES / f"{person_id}.jpg", quality=95)
-		self.people.append({"id": person_id, "name": name, "opp": False, "file": f"{person_id}.jpg"})
+		self.people.append({"id": person_id, "name": name, "opp": opp, "file": f"{person_id}.jpg"})
+		# no restart (that reloads the model); it answers "rejected" if it can't find the face
+		self.send(("register", person_id, [str(IMAGES / f"{person_id}.jpg")]))
 		self.roster_changed()
 
 	def delete_person(self, person:dict) -> None:
 		if not messagebox.askyesno("Opp Detector", f"Remove {person['name']}?", parent=self.root): return
+		self.send(("unregister", person["id"]))
+		self.remove(person)
+
+	def remove(self, person:dict) -> None:
 		self.people.remove(person)
 		self.thumbs.pop(person["id"], None)
 		(IMAGES / person["file"]).unlink(missing_ok=True)
@@ -140,9 +181,6 @@ class App:
 	def roster_changed(self) -> None:
 		save_people(self.people)
 		self.render_people()
-		if self.detector: # it only loads faces when it starts
-			self.stop()
-			if self.people: self.start()
 		self.refresh()
 
 	# ------------------------------------------------------------ detector
@@ -158,18 +196,33 @@ class App:
 		self.error = ""
 		self.frames = self.evasions = 0
 		self.severity = [0] * 5
+		self.in_frame, self.bboxes = [], []
 
 	def stop(self) -> None:
 		process, (stop_send, detection_recv) = self.detector # type: ignore
+		self.send("stop")
 		self.detector = None
+		# keep reading while it winds down: it can't get to the stop while it's waiting on us to take a preview
+		deadline = time.monotonic() + 2
 		try:
-			stop_send.send("stop")
-		except OSError:
-			pass # already gone
-		process.join(2)
+			while process.is_alive() and time.monotonic() < deadline:
+				if detection_recv.poll(0.05): detection_recv.recv()
+		except (EOFError, OSError):
+			process.join(1) # it closed its end: on its way out
 		if process.is_alive(): process.terminate() # e.g. still loading the model: not listening yet
 		stop_send.close()
 		detection_recv.close()
+		self.jpeg = None
+		self.photo = self.blank
+		self.view.config(image=self.blank)
+
+	def send(self, cmd) -> None:
+		'''Tell the detector something (see Detector.handle_commands), if it's running'''
+		if not self.detector: return
+		try:
+			self.detector[1][0].send(cmd)
+		except OSError:
+			pass # already gone
 
 	def poll(self) -> None:
 		'''Runs every POLL_MS on the UI thread: handle whatever frames the detector sent since'''
@@ -178,7 +231,10 @@ class App:
 			process, (_, detection_recv) = self.detector
 			try:
 				while detection_recv.poll():
-					self.on_frame(detection_recv.recv())
+					kind, *msg = detection_recv.recv()
+					if kind == "preview": self.show(*msg)
+					elif kind == "detections": self.on_frame(*msg)
+					elif kind == "rejected": self.on_rejected(*msg)
 			except (EOFError, OSError):
 				pass # the detector went away: picked up just below
 			if not process.is_alive():
@@ -188,18 +244,46 @@ class App:
 		finally:
 			self.root.after(POLL_MS, self.poll)
 
-	def on_frame(self, det_summary:dict[str, tuple[float, float]]) -> None:
+	def show(self, jpeg:bytes) -> None:
+		'''Put a camera frame in the view: mirrored like a selfie camera, a box + name on everyone the detector saw'''
+		self.jpeg = jpeg
+		img = ImageOps.mirror(Image.open(io.BytesIO(jpeg)))
+		draw = ImageDraw.Draw(img)
+		people = {p["id"]: p for p in self.people}
+		for det in self.bboxes:
+			person = people.get(det["person"]) # None = a stranger (or deleted since)
+			colour = GREY if person is None else RED if person["opp"] else GREEN
+			l, t, r, b = det["bbox"]
+			l, r = img.width - r, img.width - l # the picture is flipped, so the box flips with it
+			draw.rectangle((l, t, r, b), outline=colour, width=4)
+			# drawn after the flip, so it reads the right way round
+			label = f"{person['name']} {det['similarity'] or 0:.0%}" if person else "unknown"
+			draw.text((l + 8, max(t, 0) + 6), label, font=FONT, fill="white", stroke_width=3, stroke_fill=colour)
+		self.photo = ImageTk.PhotoImage(img.resize((VIEW_W, VIEW_W * img.height // img.width)))
+		self.view.config(image=self.photo)
+
+	def on_rejected(self, person_id:str) -> None:
+		'''The detector couldn't use the photo of someone we just added: take them back out'''
+		for person in [p for p in self.people if p["id"] == person_id]:
+			self.remove(person)
+			messagebox.showerror("Opp Detector", f"Couldn't add {person['name']}: their photo needs exactly one face in it.", parent=self.root)
+
+	def on_frame(self, det_summary:dict[str, tuple[float, float]], bboxes:list[dict]) -> None:
 		'''`det_summary` is person id -> (confidence, proportion of the frame)'''
 		self.frames += 1
-		opps = {p["id"] for p in self.people if p["opp"]}
+		self.bboxes = bboxes
+		opps = {p["id"]: p["name"] for p in self.people if p["opp"]}
 		# same thresholds as cli.handle_detections
-		in_frame = sum(
-			1 for who, (conf, prop) in det_summary.items()
+		self.in_frame = [
+			opps[who] for who, (conf, prop) in det_summary.items()
 			if who in opps and conf >= 0.5 and prop >= 0.01
-		)
-		self.severity = self.severity[1:] + [in_frame]
+		]
+		self.severity = self.severity[1:] + [len(self.in_frame)]
 		if is_edge(self.severity):
 			self.evasions += 1
+			# evading blocks for up to a second or two: get the reason on screen first
+			self.refresh()
+			self.root.update_idletasks()
 			choose_evasion_method()()
 
 	# ------------------------------------------------------------ window
@@ -212,10 +296,14 @@ class App:
 		else:
 			status = self.error or "Stopped"
 		self.status.config(text=status)
-		self.toggle.config(
-			text="Stop detector" if running else "Start detector",
-			state="normal" if running or self.people else "disabled",
-		)
+		# startable with nobody added yet: the first person can come straight from the camera
+		self.toggle.config(text="Stop detector" if running else "Start detector")
+		self.capture.config(state="normal" if self.jpeg else "disabled")
+
+		if not running: self.banner.config(text="OFF", bg=GREY)
+		elif not self.frames: self.banner.config(text="STARTING…", bg=GREY)
+		elif self.in_frame: self.banner.config(text="OPP IN FRAME: " + ", ".join(self.in_frame), bg=RED)
+		else: self.banner.config(text="CLEAR", bg=GREEN)
 
 	def quit(self) -> None:
 		if self.detector: self.stop()
