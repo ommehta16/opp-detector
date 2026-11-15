@@ -35,6 +35,7 @@ def handle_detections(p:Process, detection_recv: Connection):
 
         # name -> conf, prop of screen
         det_summary:dict[str, tuple[float,float]] = detection_recv.recv()
+        print(det_summary)
 
         curr_severity = 0
 
@@ -47,9 +48,10 @@ def handle_detections(p:Process, detection_recv: Connection):
             curr_severity += 1 # 1 opp on screen so we increase severity
 
         severity = [severity[i] for i in range(1,5)] + [curr_severity]
-
+        
         if is_edge(severity):
             # TODO: do evasion!
+            print("I WOULD EVADE YOU HERE YOU STINKY MONKEY")
             ...
 
 def is_edge(severity:list[float]):
