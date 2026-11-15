@@ -64,7 +64,7 @@ class Detector:
 				curr = det_summary.get(name,(0,0))
 				summary = (
 					max(curr[0], detection.similarity or 0),
-					max(curr[1] + detection.area()//FRAME_AREA, 1 ) # extremely naive area calculation (should be fine for ourpurposes)
+					min(curr[1] + detection.area()/FRAME_AREA, 1 ) # extremely naive area calculation (should be fine for ourpurposes)
 				)
 				det_summary[name] = summary
 
@@ -101,6 +101,10 @@ def start_detector(people:dict[str, list[str]]):
 	detection_recv, detection_send = mp.Pipe(duplex=False)
 	p = mp.Process(target=_detector_thread_start,args=[people,stop_recv,detection_send],daemon=True)
 	p.start() # .run() would run the target right here in this process and block until it returns
+	# the child has its own copies of its two ends now; drop ours so they don't pile up across
+	# restarts, and so reading detections hits EOF once the child is gone
+	stop_recv.close()
+	detection_send.close()
 	return p, (stop_send, detection_recv)
 
 def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out_pipe:Connection):
