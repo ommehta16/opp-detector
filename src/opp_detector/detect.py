@@ -30,6 +30,9 @@ class Detector:
 		min_interval:float = 1/target_frame_rate
 		last_processed:float = 0.0
 
+		# who -> conf, proportion of screen
+		det_summary:dict[str,tuple[float,float]] = dict()
+
 		while True:
 			if self._stop.poll(): break
 
@@ -46,12 +49,26 @@ class Detector:
 			last_processed = now
 
 			frame = _to_size(frame_raw)
+			FRAME_AREA:int = frame.shape[0] * frame.shape[1]
 
 			# now we do the face detection
 			dets = self.detect(frame)
-			for det in dets: self._detections.send(det.jason())
+			unknown_count = 0
+			for detection in dets:
+				name = detection.person
+				if name is None:
+					unknown_count += 1
+					name = f"unknown{unknown_count}"
+				curr = det_summary.get(name,(0,0))
+				summary = (
+					max(curr[0], detection.similarity or 0),
+					max(curr[1] + detection.area()//FRAME_AREA, 1 ) # extremely naive area calculation (should be fine for ourpurposes)
+				)
+				det_summary[name] = summary
 
 			self.show_frame(frame, dets)
+
+		self._detections.send(det_summary)
 
 	def detect(self, img:cv2.typing.MatLike) -> list[Detection]:
 		matches = self._anal.match(self._anal.get(img))
@@ -62,7 +79,7 @@ class Detector:
 			# body_bbox is None when only a face was found -> fall back to the face box
 			bbox = person.body_bbox if person.body_bbox is not None else person.face.bbox
 
-			detection = Detection(bbox, result.person_id)
+			detection = Detection(bbox, result.person_id, result.similarity)
 			dets.append(detection)
 
 		return dets
@@ -84,8 +101,7 @@ def start_detector(people:dict[str, list[str]]):
 	return p, (stop_send, detection_recv)
 
 def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out_pipe:Connection):
-	# ctrl-c hits both processes; let the parent handle it and tell us to stop through the pipe
-	signal.signal(signal.SIGINT, signal.SIG_IGN)
+	signal.signal(signal.SIGINT, signal.SIG_IGN) # so SIGINT doesn't hit subprocess directly
 
 	anal = PersonAnalysis()
 	detector = Detector(anal, stop_pipe, out_pipe)
@@ -104,11 +120,20 @@ def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out
 class Detection:
 	bbox:tuple[int,int,int,int]
 	person:str|None
+	similarity:float|None
 
-	def __init__(self, bbox:tuple[float,float,float,float], person:str|None):
-		'''Create `Detection` with given bbox (l,t,r,b) and person'''
+	def __init__(self, bbox:tuple[float,float,float,float], person:str|None=None, similarity:float|None=None):
+		'''
+		Create `Detection` with given bbox (l,t,r,b) and person
+		
+		Args:
+			- bbox = axis aligned bounding box of deteciton
+			- person = name of the identified person
+			- similarity = cosine similarity
+		'''
 		self.bbox = tuple(int(v) for v in bbox) #type: ignore
 		self.person = person
+		self.similarity = similarity
 
 	def draw(self,img:cv2.typing.MatLike):
 		'''Draws this detection onto `img` in-place (mutates `img`!)'''
@@ -122,6 +147,10 @@ class Detection:
 					fontScale = 0.6,
 					color = color,
 					thickness = 2)
+	def area(self):
+		l, t, r, b = self.bbox
+		return abs((r-l) * (b-t))
+	
 	def jason(self):
 		return {'bbox':self.bbox,'person':self.person}
 
@@ -132,20 +161,3 @@ def _to_size(img:cv2.typing.MatLike):
 	# if curr[0] == 0 or curr[1] == 0: raise Exception("img has size 0 in atleast one dimension")
 	new_size = ( curr[1] * TARGET_HEIGHT // curr[0], TARGET_HEIGHT )
 	return cv2.resize(img,new_size) # maybe try resampling at later stage
-
-def main():
-	p, (stop_pipe, detection_pipe) = start_detector({"me":["test_pics/reference.JPG",]})
-
-	try:
-		# stops by itself when the detector exits (q pressed in the window, or it crashed)
-		while p.is_alive():
-			# poll with a timeout instead of sleep(10), so detections print as they arrive
-			if detection_pipe.poll(1):
-				print(detection_pipe.recv())
-	except: pass
-	finally:
-		stop_pipe.send("stopppp")
-		p.join()
-
-if __name__ == "__main__":
-	main()
