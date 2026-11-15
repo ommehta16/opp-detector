@@ -1,5 +1,6 @@
 import cv2
 from insightface.app.person_analysis import PersonAnalysis
+import signal
 import time
 
 import multiprocessing as mp
@@ -19,39 +20,38 @@ class Detector:
 	def register(self, imgs:list[cv2.typing.MatLike], name:str):
 		self._anal.register(name, imgs)
 
-	def background_loop(self, cap:cv2.VideoCapture, frame_rate:int=60, target_frame_rate:int=5):
+	def background_loop(self, cap:cv2.VideoCapture, target_frame_rate:float=5):
 		'''The internal background loop task: consumes video frames and processes; send a notif to detection queue if opp detected'''
-		
+
 		if not cap.isOpened():
 			raise RuntimeError("Capture is not opened")
-		
-		# whole number, otherwise `frames % skip_frames` never hits 0 for odd frame rates
-		skip_frames:int = max(1, round(frame_rate/target_frame_rate))
-	
-		frames:int = -1
-	
+
+		# throttle by wall clock: the camera's reported fps can't be trusted (mine says 15, delivers 30)
+		min_interval:float = 1/target_frame_rate
+		last_processed:float = 0.0
+
 		while True:
 			if self._stop.poll(): break
-			
+
 			ret, frame_raw = cap.read()
-			frames+=1
-	
-			if frames % skip_frames != 0:
-				continue
-	
 			if not ret:
 				raise RuntimeError("No more video :(")
-	
+
+			# waitKey is what repaints the window + handles its events, so run it on EVERY frame
+			# (skipped ones too) or the window freezes; press q to quit
+			if cv2.waitKey(1) & 0xFF == ord("q"): break
+
+			now = time.monotonic()
+			if now - last_processed < min_interval: continue
+			last_processed = now
+
 			frame = _to_size(frame_raw)
-	
+
 			# now we do the face detection
 			dets = self.detect(frame)
-			print("hi!")
-			for det in dets: self._detections.send("hello?")
+			for det in dets: self._detections.send(det.jason())
 
 			self.show_frame(frame, dets)
-			# waitKey also lets the window repaint; press q to quit
-			if cv2.waitKey(1) & 0xFF == ord("q"): break
 
 	def detect(self, img:cv2.typing.MatLike) -> list[Detection]:
 		matches = self._anal.match(self._anal.get(img))
@@ -75,12 +75,18 @@ class Detector:
 
 def start_detector(people:dict[str, list[str]]):
 	''' -> process, stop_pipe, detection_pipe'''
-	stop_pipe, detection_pipe = mp.Pipe()
-	p = mp.Process(target=_detector_thread_start,args=[people,stop_pipe,detection_pipe])
-	p.run()
-	return p, (stop_pipe, detection_pipe)
+	# two separate one-way pipes: mp.Pipe() returns the two ENDS of a single pipe, so using one
+	# pipe for both made the detector's own detections show up as its stop signal
+	stop_recv, stop_send = mp.Pipe(duplex=False)
+	detection_recv, detection_send = mp.Pipe(duplex=False)
+	p = mp.Process(target=_detector_thread_start,args=[people,stop_recv,detection_send],daemon=True)
+	p.start() # .run() would run the target right here in this process and block until it returns
+	return p, (stop_send, detection_recv)
 
 def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out_pipe:Connection):
+	# ctrl-c hits both processes; let the parent handle it and tell us to stop through the pipe
+	signal.signal(signal.SIGINT, signal.SIG_IGN)
+
 	anal = PersonAnalysis()
 	detector = Detector(anal, stop_pipe, out_pipe)
 	for name in people:
@@ -88,7 +94,12 @@ def _detector_thread_start(people:dict[str,list[str]], stop_pipe:Connection, out
 		ims:list[cv2.typing.MatLike] = list(filter(lambda a: a is not None, map(cv2.imread, img_paths))) #type: ignore
 		detector.register(ims,name)
 
-	detector.background_loop( cv2.VideoCapture(0) )
+	cap = cv2.VideoCapture(0) 
+	try:
+		detector.background_loop(cap)
+	finally:
+		cap.release()
+		cv2.destroyAllWindows()
 
 class Detection:
 	bbox:tuple[int,int,int,int]
@@ -96,12 +107,12 @@ class Detection:
 
 	def __init__(self, bbox:tuple[float,float,float,float], person:str|None):
 		'''Create `Detection` with given bbox (l,t,r,b) and person'''
-		self.bbox = (int(v) for v in bbox) #type: ignore
+		self.bbox = tuple(int(v) for v in bbox) #type: ignore
 		self.person = person
 
 	def draw(self,img:cv2.typing.MatLike):
 		'''Draws this detection onto `img` in-place (mutates `img`!)'''
-		l, r, t, b = self.bbox
+		l, t, r, b = self.bbox
 		color = (255,0,0) if self.person is not None else (0,255,0)
 		cv2.rectangle(img, (l,t), (r,b), color,2)
 		cv2.putText(img,
@@ -126,29 +137,15 @@ def main():
 	p, (stop_pipe, detection_pipe) = start_detector({"me":["test_pics/reference.JPG",]})
 
 	try:
-		while True:
-			time.sleep(10)
-			while detection_pipe.poll():
+		# stops by itself when the detector exits (q pressed in the window, or it crashed)
+		while p.is_alive():
+			# poll with a timeout instead of sleep(10), so detections print as they arrive
+			if detection_pipe.poll(1):
 				print(detection_pipe.recv())
-	except:
+	except: pass
+	finally:
 		stop_pipe.send("stopppp")
 		p.join()
-
-	anal = PersonAnalysis()
-	anal.prepare()
-	# register() reads the path itself (as BGR)
-	registration = anal.register("me","test_pics/reference.JPG")
-	if registration.accepted == 0:
-		raise ValueError(f"No registration accepted: {registration.rejected}")
-
-	cap = cv2.VideoCapture(0) # 0 = default (built-in) camera
-	try:
-		# some cameras report 0 fps -> assume 30
-		# detect_face_loop(cap,anal,round(cap.get(cv2.CAP_PROP_FPS)) or 30)
-		...
-	finally:
-		cap.release()
-		cv2.destroyAllWindows()
 
 if __name__ == "__main__":
 	main()
